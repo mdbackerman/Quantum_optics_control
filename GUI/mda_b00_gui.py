@@ -1,26 +1,65 @@
 """
 B00 gui for room-temp NV experiment control
 
-dates: somme date in July -> 083122
+dates: some date in July -> 090122
 
-Author: MDA
+Author: Miles D. Ackerman (undergraduate during the summer of 2022). Email: miles.ackerman1@gmail.com
 
-What it does:                                       last updated: 083022
-    1. print hello
-    2. have buttons
+General info:
+This file makes a GUI to control the room-temp NV center-based measurement setup in LISE room B00 in the Lukin Group in the Harvard PHY dept. The setup
+is a confocal laser scanning microscope. A galvo steers a laser beam at 518 nm (butteryfly) through a 4F telescope setup. An excitation and a collection
+path (both use fiber coupling) are present. The sample stage is manually-controlled by positioning dials. Additionally, the z-axis of the microscope
+objective is controlled by a piezo. This entire setup is controlled by a NI-cDAQ (model 9147). The NI-DAQmx is the National Insturments API that is 
+used to communicate with the cDAQ device. Info. about this device can be found at:
+https://nidaqmx-python.readthedocs.io/en/latest/https://nidaqmx-python.readthedocs.io/en/latest/. Two cards/modules are present in the cDAQ chassis: 1.
+NI-9402 (four bi-directional digital input/output (I/O) channels -also featuring programmable internal clocks for counting). Info about the NI-9402 
+module can be found at: https://www.ni.com/en-us/support/model.ni-9402.htmlhttps://www.ni.com/en-us/support/model.ni-9402.html. This module functions 
+as a counter based on an internal clock within the module. The parameters for creating a counter assigned to this module when it is created in each 
+scanning script. The counter requires the use of two of the four available channels on this cDAQ card. One channel is for input (from the APD on the
+optical bench), and one channel for the hardware-timed clock to "run" the counter. Currently (as of 081522) only one counter (analog input) channel 
+can be created at a time. In order to change this functionality, the source code for this contributed drivers package must be edited. And 2. NI-9263 
+(four analog output channels (-10 V to +10 V). This module's info can be found at: 
+https://www.ni.com/en-us/support/model.ni-9263.htmlhttps://www.ni.com/en-us/support/model.ni-9263.html. This moduel is used for programmable digital 
+output. This functionality is largely used for controlling the servo motors on the ThorLab's galvo (by writing a sequence of voltages to them). Here,
+all available digital output channels are created in one line: `ni_9263_ao_channels` where a single channel can be accessed at a time. The main 
+function of this application is running confocal scannign scripts in different planes (the XY plane at a specified Z height, the XZ plane across a 
+specified z-range, and the YZ plane at a specified X range). The GUI is split into 2 main setions, a left-half and a right-half section. The left-hand 
+section contains the input controls for running a specific scanning script. On the bottom of the left-hand section is an option to save the dataset 
+that was just scan and plotted on the right. The right-hand section conatins the output plot from a run scan. An important element of this application 
+is its use of the QCoDeS framework to create/initialize parts of the NI-cDAQ for use in scripts. Info about this data-acquisition framework can be 
+found at: https://qcodes.github.io/https://qcodes.github.io/.
 
-What it needs to do:                                       last updated: 083022
-    1. XY scanning
-    2. XZ scanning
-    3. YZ scanning
-    4. dataset option saving
-    5. include scanning parameters / save somehow
+Helpful info. when reading through this application code:
+1. The NI-cDAQ card (chasis) is called (this can be changed using the NI-MAX software when the NI-DAQ card is connected to this computer)
+"cDAQ1". Additional info. about the cDAQ device and its inserted modules (as of 081522 only ni_9402 and ni_9263) can be viewed in the NI-MAX software.
+This software opens automatically when the cDAQ device is connected to this computer
+2. The first module inserted into the cDAQ card (the NI-9402 module) is called "mod1". This naming pattern follows the available slots within the 
+cDAQ chasis (there are four available slots)
+3. The second module in the cDAQ chasis (the NI-9263 module) is called "mod2" following in suit
 """
 
 # TODO: remove unused imports
 # TODO: update naming conventions throughout scripts and entire file
+# TODO: can about window be set to the center of the screen regardles of the position of the main window?
+# TODO: fix allowing scans to be run one after the other. Will "Try... Except" work?
+# 0901 this above is fixed. However, the fix lies in the implementation of validating the resolution input. If the input-validation framework changes 
+# (as it should bc it is limited to only checking reoslution now) the allowed-repeated-scanning functionality MUST be re-written
+# TODO: cont. below
+"""
+Input validation (resolution, min and max voltages for axes)
+Multile scans w/out closing programs (scan_galvo.close) (use Try... Except?)
+Saving scan data/images
+Progress (scanning) bar
+Live plot updating?
+Point size minimum based on wavelength of used laser
+Date (current) for plot labes
+input validation method is currently only limited to checking resolutions setting per each scan
+"""
 
 #################################################################### imports ###################################################################################
+from argparse import ONE_OR_MORE
+from ast import AugAssign
+# from curses import window
 import sys
 import nidaqmx
 import numpy
@@ -52,8 +91,134 @@ from qcodes_contrib_drivers.drivers.NationalInstruments.class_file import *
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 
+from PyQt5.QtWidgets import QMessageBox
+
 ############### globals ##############
-any_script_run_one_Q = False
+any_script_run_one_Q = False # for multiple scanning
+
+# temp_holding_data_array = numpy.zeros()
+
+################################################################## "Make_Error_Window_2" Class ######################################################################
+class Make_Error_Window_2(QtWidgets.QMainWindow): # create the "Make_Error_Window_2" for displaying a new window with error content
+
+    # ?
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.setStyleSheet("background-color: red;")
+
+        self.title = "Error" # define the title of the error window
+
+        self.top    = 350 # set the display location of the error window
+        self.left   = 675 # can this be set to the center of the screen regardles of the position of the main window?
+
+        self.error_window_width  = 205 # define the width of the error window
+        self.error_window_height = 50 # define the height of the error window
+
+        self.setMaximumSize(self.error_window_width, self.error_window_height) # set the maximum size of the error window
+        self.setMinimumSize(self.error_window_width, self.error_window_height) # set the minimum size of the error window
+
+        # begin content of the error window
+        error_window_left_justify_adjust = 5 # optional adjustment parameter for the content of the error window (left justify)
+
+        error_window_top_justify_adjust = 5 # optional adjustment parameter for the content of the error window (top justify)
+
+        error_window_content_line_1 = QLabel("ERROR!", self)
+        error_window_content_line_1.move(60 + error_window_left_justify_adjust, 0 + error_window_top_justify_adjust)
+        error_window_content_line_1.resize(300, 15)
+
+        error_window_content_line_2 = QLabel("Adjust address to save", self)
+        error_window_content_line_2.move(40 + error_window_left_justify_adjust, 15 + error_window_top_justify_adjust)
+        error_window_content_line_2.resize(300, 15)
+
+        # end content of the error window
+
+        self.setWindowTitle(self.title) # set the title of the displayed error window
+        self.setGeometry(self.left, self.top, self.error_window_width, self.error_window_height) # set the geometry (size) of the displayed error window
+
+
+
+################################################################## "Make_Error_Window" Class ######################################################################
+class Make_Error_Window(QtWidgets.QMainWindow): # create the "Make_Error_Window" for displaying a new window with error content
+
+    # ?
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.setStyleSheet("background-color: red;")
+
+        self.title = "Error" # define the title of the error window
+
+        self.top    = 350 # set the display location of the error window
+        self.left   = 675 # can this be set to the center of the screen regardles of the position of the main window?
+
+        self.error_window_width  = 205 # define the width of the error window
+        self.error_window_height = 50 # define the height of the error window
+
+        self.setMaximumSize(self.error_window_width, self.error_window_height) # set the maximum size of the error window
+        self.setMinimumSize(self.error_window_width, self.error_window_height) # set the minimum size of the error window
+
+        # begin content of the aobut window
+        error_window_left_justify_adjust = 5 # optional adjustment parameter for the content of the error window (left justify)
+
+        error_window_top_justify_adjust = 5 # optional adjustment parameter for the content of the error window (top justify)
+
+        error_window_content_line_1 = QLabel("ERROR!", self)
+        error_window_content_line_1.move(60 + error_window_left_justify_adjust, 0 + error_window_top_justify_adjust)
+        error_window_content_line_1.resize(300, 15)
+
+        error_window_content_line_2 = QLabel("Adjust resolution", self)
+        error_window_content_line_2.move(45 + error_window_left_justify_adjust, 15 + error_window_top_justify_adjust)
+        error_window_content_line_2.resize(300, 15)
+
+        # end content of the error window
+
+        self.setWindowTitle(self.title) # set the title of the displayed error window
+        self.setGeometry(self.left, self.top, self.error_window_width, self.error_window_height) # set the geometry (size) of the displayed error window
+
+
+################################################################## "Make_About_Window" Class ######################################################################
+class Make_About_Window(QtWidgets.QMainWindow): # create the "Make_About_Window" for displaying a new window with about content
+
+    # ?
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.title = "About" # define the title of the about window
+
+        self.top    = 350 # set the display location of the about window
+        self.left   = 675 # can this be set to the center of the screen regardles of the position of the main window?
+
+        self.about_window_width  = 205 # define the width of the about window
+        self.about_window_height = 70 # define the height of the about window
+
+        self.setMaximumSize(self.about_window_width, self.about_window_height) # set the maximum size of the about window
+        self.setMinimumSize(self.about_window_width, self.about_window_height) # set the minimum size of the about window
+
+        # begin content of the aobut window
+        about_window_left_justify_adjust = 5 # optional adjustment parameter for the content of the about window (left justify)
+
+        about_window_top_justify_adjust = 5 # optional adjustment parameter for the content of the about window (top justify)
+
+        about_window_content_line_1 = QLabel("Application name: mda_b00_gui", self)
+        about_window_content_line_1.move(0 + about_window_left_justify_adjust, 0 + about_window_top_justify_adjust)
+        about_window_content_line_1.resize(300, 15)
+
+        about_window_content_line_2 = QLabel("Author: Miles D. Ackerman", self)
+        about_window_content_line_2.move(0 + about_window_left_justify_adjust, 15 + about_window_top_justify_adjust)
+        about_window_content_line_2.resize(300, 15)
+
+        about_window_content_line_3 = QLabel("Last modified: 090122", self)
+        about_window_content_line_3.move(0 + about_window_left_justify_adjust, 30 + about_window_top_justify_adjust)
+        about_window_content_line_3.resize(300, 15)
+
+        about_window_content_line_3 = QLabel("OS: MS Windows 10 Pro", self)
+        about_window_content_line_3.move(0 + about_window_left_justify_adjust, 45 + about_window_top_justify_adjust)
+        about_window_content_line_3.resize(300, 15)
+        # end content of the about window
+
+        self.setWindowTitle(self.title) # set the title of the displayed about window
+        self.setGeometry(self.left, self.top, self.about_window_width, self.about_window_height) # set the geometry (size) of the displayed about window
 
 ################################################### MatPlotLib class ######################################################################################
 class MplCanvas(FigureCanvasQTAgg):
@@ -71,37 +236,36 @@ class Parent(QtWidgets.QMainWindow):
     def __init__(self, parent = None):
         super().__init__(parent)
 
-        ######################################################################### prelims ##############################################################################
+        def display_about_window():
+            self.Make_About_Window = Make_About_Window()
+            self.Make_About_Window.show()
 
-        # setting up GUI window
+        ######################################################################### GUI prelims ##############################################################################
+
+        # setting up main GUI window
         self.child_widget = Child(parent = self)
-        self.setCentralWidget(self.child_widget)
-        gui_window_height = 440
-        gui_window_width = 800
-        self.setGeometry(300, 100, gui_window_width, gui_window_height) # x-coord, y-coord, width, height
-        self.setMinimumSize(gui_window_width, gui_window_height) # window min size
-        self.setMaximumSize(gui_window_width, gui_window_height) # window max size
-        self.setWindowTitle("mda_b00_gui")
+        self.setCentralWidget(self.child_widget) # setting the central widget of the main window (Parent class) to the Child class
+        gui_window_height = 440 # define the main window height
+        gui_window_width = 800 # define the main window width
+        self.setGeometry(400, 200, gui_window_width, gui_window_height) # x-coord, y-coord, width, height
+        self.setMinimumSize(gui_window_width, gui_window_height) # set the main window min size
+        self.setMaximumSize(gui_window_width, gui_window_height) # set the main window max size
+        self.setWindowTitle("mda_b00_gui") # set the title of the main window
 
         ################################################################### menu bar #############################################################################
-        menu_bar = self.menuBar() # create the menu bar
+        main_window_menu_bar = self.menuBar() # this creates the menu abr for the main GUI window
         
-        one_menu = menu_bar.addMenu("File")
-        one_sub1 = QtWidgets.QAction("sub1", self)
-        one_menu.addAction(one_sub1)
-        one_sub2 = QtWidgets.QAction("sub2", self)
-        one_menu.addAction(one_sub2)
-        one_sub3 = QtWidgets.QAction("sub3", self)
-        one_menu.addAction(one_sub3)
+        # "File" menu option
+        file_menu = main_window_menu_bar.addMenu("File") # this adds the "File" option to the main window's menu bar
+        exit_option = QtWidgets.QAction("Exit", self) # adds the "Exit" sub_option to "File" menu option
+        exit_option.triggered.connect(qApp.quit) # setting the fnc of clicking "Exit" sub_option to quit application
+        file_menu.addAction(exit_option) # adding "Exit" sub_option to "File" option
         
-        two_menu = menu_bar.addMenu("Help")
-        two_sub1 = QtWidgets.QAction("sub1", self)
-        two_menu.addAction(two_sub1)
-
-        about_menu = menu_bar.addMenu("About")
-        # about_menu_info = QtWidgets.QAction("sub1", self)
-        about_menu_info = QtWidgets.QAction("GUI-based control for the room-temp NV center measurement setup", self)
-        about_menu.addAction(about_menu_info)
+        # "Help" menu option
+        help_menu = main_window_menu_bar.addMenu("Help") # this adds the "Help" option to the main window's menu bar
+        hep_menu_about = QtWidgets.QAction("About", self) # this adds an "About" sub_option to the "Help" option
+        hep_menu_about.triggered.connect(display_about_window) # this connects clicking the "About" to "..."
+        help_menu.addAction(hep_menu_about) # adding "About" sub_option to the "Help" menu option
 
 ############################################################################# "Chid" class #######################################################################
 class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
@@ -114,7 +278,50 @@ class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
 
         ########################################################## CHILD functions ################################################################################
         
-        # print_XY_scan_parameters_fnc
+        ########## overall #################
+        # display error window fnc
+        def display_resolution_error_window_fnc(): # this fnc calls the "Make_Error_Window" class to display an eror message indicating user input is not validated
+            self.Make_Error_Window = Make_Error_Window()
+            self.Make_Error_Window.show()
+        
+        def display_save_address_length_error_window_fnc(): # this fnc calls the "Make_Error_Window" class to display an eror message indicating user input is not validated
+            self.Make_Error_Window_2 = Make_Error_Window_2()
+            self.Make_Error_Window_2.show()
+
+        # save most recent scan data fnc
+        def save_scan_data_fnc(): # this fnc works for any scanning script
+
+            """
+            How this works/applies to each scanning script:
+            In any scanning script (XY, XZ, and YZ), a data_array is created according to the user-specified grid_size. It is a Numpy array of zeros that will be
+            populated throughout the scanning program as it progresses. At the same time of that data-array created a global variable called "most_recent_data_array"
+            is created and is then set to the same size matching the scan-specific data_array. At the end of the scanning scipt this temporary data array is matched to
+            the scan's specific data array, value for value. Now "most_recent-data_array" is called (since it is defined to be Global) below for saving. This
+            """
+
+            saving_scan_error_bool = False # setting up a bool value for error checking below
+
+            # print("save_scan_data_fnc called")                                               # delete later
+            # print("@address :" + save_scan_data_qlineedit.text())                                               # delete later
+
+            # while loop for error checking if address to save data at has length > 0
+            while saving_scan_error_bool is False:
+
+                if len(str(save_scan_data_qlineedit.text())) == 0: # checking if length of specified saving address is > 0
+
+                    # print("EXCEPTION!")                                                       # safe to delete
+                    display_save_address_length_error_window_fnc()                              # fix to new window. Only a test now
+                    break # condition remains False; not saved; exit
+
+                elif len(str(save_scan_data_qlineedit.text())) > 0: # checking the length of the specified address is greater than 0
+
+                    saving_scan_error_bool == True # adjusting the value of the current bool to True
+                    address_to_save_scan_data_at = save_scan_data_qlineedit.text() # creating a variable as the specified (now error-checked) address
+                    numpy.save(str(address_to_save_scan_data_at), most_recent_data_array) # saving the correct data array
+                    break # data has been successfully save; so exit checking loop
+
+        ########### XY scanning #############
+        # print/display XY scan parameters fnc
         def print_XY_scan_parameters_fnc(self, parent = Child): # this fnc does...
             print("XY_SCAN PARAMETERS/INFO: ", end = "")
             print("XY_scan resolution = %d, " % int(xy_scan_resolution_qlineedit.text()), end = "")
@@ -125,30 +332,20 @@ class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
             print("XY_scan max y driving voltage = %2f, " % float(xy_scan_y_voltage_max_qlineedit.text()), end = "")
             print("XY_scan z-piezo driving voltage = %2f." % float(xy_scan_z_piezo_voltage_qlineedit.text()))
         
-        # print_XZ_scan_parameters_fnc
-        def print_XZ_scan_parameters_fnc(self, parent = Child): # this fnc does...
-            print("XZ_SCAN PARAMETERS/INFO: ", end = "")
-            print("XZ_scan resolution = %d, " % int(xz_scan_resolution_qlineedit.text()), end = "")
-            print("XZ_scan counter read time = %2f, " % round(float(xz_scan_read_time_qlineedit.text()), 2), end = "")
-            print("XZ_scan min x driving voltage = %2f, " % float(xz_scan_x_voltage_min_qlineedit.text()), end = "")
-            print("XZ_scan max x driving voltage = %2f, " % float(xz_scan_x_voltage_max_qlineedit.text()), end = "")
-            print("XZ_scan y driving voltage = %2f, " % float(xz_scan_y_voltage_qlineedit.text()), end = "")
-            print("XZ_scan z-piezo min driving voltage = %2f, " % float(xz_scan_z_piezo_min_voltage_qlineedit.text()), end = "")
-            print("XZ_scan z-piezo max driving voltage = %2f." % float(xz_scan_z_piezo_max_voltage_qlineedit.text()))
-        
-        # print_YZ_scan_parameters_fnc
-        def print_YZ_scan_parameters_fnc(self, parent = Child): # this fnc does...
-            print("YZ_SCAN PARAMETERS/INFO: ", end = "")
-            print("YZ_scan resolution = %d, " % int(yz_scan_resolution_qlineedit.text()), end = "")
-            print("YZ_scan counter read time = %2f, " % round(float(yz_scan_read_time_qlineedit.text()), 2), end = "")
-            print("YZ_scan min Y driving voltage = %2f, " % float(yz_scan_y_voltage_min_qlineedit.text()), end = "")
-            print("YZ_scan max Y driving voltage = %2f, " % float(yz_scan_y_voltage_max_qlineedit.text()), end = "")
-            print("YZ_scan X driving voltage = %2f, " % float(yz_scan_x_voltage_qlineedit.text()), end = "")
-            print("YZ_scan z-piezo min driving voltage = %2f, " % float(yz_scan_z_piezo_min_voltage_qlineedit.text()), end = "")
-            print("YZ_scan z-piezo max driving voltage = %2f." % float(yz_scan_z_piezo_max_voltage_qlineedit.text()))
-
-        # XY scanning function
+        # run XY scanning function
         def run_xy_scan_fnc(): # this fnc runs the xy_scan per the user-entered parameters in the xy_scan qlineedits
+
+            """
+            This runs X and Y only scan. It currently creates and then populates a user defined size numpy array according to a set counter acquisition time and a motor
+step voltage setting. Additionally, the initial driving voltage for the X and Y motors can be set according to the desired scanning range. This scanning program runs in a snake pattern, it scan the first row left to right, moves up one row, 
+then scans right to left and continues. Alternatives would be scanning left to right, and resetting the position of the laser on the next higher row and scanning again left 
+to right OR scanning in a "circular" patter either CW or CCW from outside to inside or inside to outside. The chosen method was picked for simplicity of understanding. The 
+scanning loops are present within NI-DAQmx tasks to speed up the program. Starting and stopping a NI-DAQmx task repeatedly slows down the program dramatically. So, the 
+counter and hardware clock task are started once, then the scanning program is run, and then the counter and clock tasks are closed -un-reserving the hardware resources. 
+This cell uses the "DAQAnalogOutputs" function from a written class file at:
+C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contrib_drivers/drivers/NationalInstruments/class_file. Slashes are reversed to run
+            """
+
             # print("xy_scan started")
 
             ############################################################### begin scanning script #############################################################################################
@@ -195,7 +392,10 @@ class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
             y_drive_voltage_step = ((np.absolute(initial_y_driving_voltage)) + (desired_end_y_mirror_voltage)) / grid_size_y
 
             # create dataset to populate
+            global xy_scan_data_array
             xy_scan_data_array = np.zeros((grid_size_x, grid_size_y))
+            global most_recent_data_array
+            most_recent_data_array = np.zeros((grid_size_x, grid_size_y))
 
             # initializing variables to store read counter info.
             output_value = 0
@@ -299,8 +499,10 @@ class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
                 counter_output_task.stop() # this stops the counter NI-DAQmx task - free-ing the reserved cDAQ card resources
                 task1.stop() # this stops the hardware-based internal clock NI-DAQmx task - free-ing the reserved cDAQ card resources
 
+            scan_galvo.close()
+
             ############################################################### end scanning script #############################################################################################
-            
+
             ############################################### plotting XY scan data in plot ####################################################
             self.sc.axes.cla()
             plot = self.sc.axes.pcolormesh(xy_scan_data_array, cmap = "inferno")
@@ -312,10 +514,59 @@ class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
             self.sc.axes.set_title("XY_scan_083122_z-piezo@%d_microns" % int((z_piezo_set_voltage * 10)), fontsize = 8)
             self.sc.draw()
             # print("xy_scan finished")
+            most_recent_data_array = xy_scan_data_array
+
+        # xy_scan resolution check then run fnc
+        def xy_scan_resolution_validation_fnc():
+
+            res_min_condition = 20 # set the min allowed resolution for scanning
+            res_max_condition = 900 # set the max allowed resolution for scanning
+
+            xy_scan_resolution_test_condition = False # define resolution validation bool for xy scan
+
+            while xy_scan_resolution_test_condition is False: # this initiates checking the resolution parameter
+
+                # checking for out of bounds of min and max conditions above
+                if int(xy_scan_resolution_qlineedit.text()) < res_min_condition or int(xy_scan_resolution_qlineedit.text()) > res_max_condition: # TODO: or negative or not a number or too large
+
+                    display_resolution_error_window_fnc() # call the error message pop-up window
+                    break # exit the checking loop: failed
+
+                # if parameter is in bounds; run scan
+                elif int(xy_scan_resolution_qlineedit.text()) > res_min_condition and int(xy_scan_resolution_qlineedit.text()) < res_max_condition:
+
+                    xy_scan_resolution_test_condition == True
+                    print_XY_scan_parameters_fnc(self) # call the print user-entered parameters fnc
+                    run_xy_scan_fnc() # call the run xy scan method fnc
+                    break # exit the checking loop: passed
+
+        ########### XZ scanning #############
+        # print_XZ_scan_parameters_fnc
+        def print_XZ_scan_parameters_fnc(self, parent = Child): # this fnc does...
+            print("XZ_SCAN PARAMETERS/INFO: ", end = "")
+            print("XZ_scan resolution = %d, " % int(xz_scan_resolution_qlineedit.text()), end = "")
+            print("XZ_scan counter read time = %2f, " % round(float(xz_scan_read_time_qlineedit.text()), 2), end = "")
+            print("XZ_scan min x driving voltage = %2f, " % float(xz_scan_x_voltage_min_qlineedit.text()), end = "")
+            print("XZ_scan max x driving voltage = %2f, " % float(xz_scan_x_voltage_max_qlineedit.text()), end = "")
+            print("XZ_scan y driving voltage = %2f, " % float(xz_scan_y_voltage_qlineedit.text()), end = "")
+            print("XZ_scan z-piezo min driving voltage = %2f, " % float(xz_scan_z_piezo_min_voltage_qlineedit.text()), end = "")
+            print("XZ_scan z-piezo max driving voltage = %2f." % float(xz_scan_z_piezo_max_voltage_qlineedit.text()))
         
         # run XZ scan fnc
         def run_xz_scan_fnc(): # this fnc runs the xy_scan per the user-entered parameters in the xy_scan qlineedits
             # print("xz_scan started")
+
+            """
+            This cell runs a XZ scan. It currently creates and then populates a user defined size numpy array according to a set counter acquisition time and a motor
+step voltage setting. Additionally, the initial driving voltage for the X and Y motors can be set according to the desired scanning range. This scanning program runs in a snake pattern, it scan the first row left to right, moves up one row, 
+then scans right to left and continues. Alternatives would be scanning left to right, and resetting the position of the laser on the next higher row and scanning again left 
+to right OR scanning in a "circular" patter either CW or CCW from outside to inside or inside to outside. The chosen method was picked for simplicity of understanding. The 
+scanning loops are present within NI-DAQmx tasks to speed up the program. Starting and stopping a NI-DAQmx task repeatedly slows down the program dramatically. So, the 
+counter and hardware clock task are started once, then the scanning program is run, and then the counter and clock tasks are closed -un-reserving the hardware resources. 
+This cell uses the "DAQAnalogOutputs" function from a written class file at:
+C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contrib_drivers/drivers/NationalInstruments/class_file. Slashes are reversed to run
+            """
+
             ################################################################################## card 2 (AO) ########################################################################
 
             # naming the instrument
@@ -357,7 +608,10 @@ class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
             z_piezo_drive_voltage_step = (initial_z_piezo_driving_voltage + (desired_end_z_piezo_voltage)) / grid_size
 
             # create dataset to populate
+            global xz_scan_data_array
             xz_scan_data_array = np.zeros((grid_size, grid_size))
+            global most_recent_data_array
+            most_recent_data_array = np.zeros((grid_size, grid_size))
 
             # initializing variables to store read counter info.
             output_value = 0
@@ -413,7 +667,7 @@ class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
                 counter_output_task.start() # this starts the counter NI-DAQmx task
                 task1.start() # this starts the hardware-based internal clock NI-DAQmx task
                         
-            ####################################################################### x and z scanning #########################################################################
+                ####################################################################### x and z scanning #########################################################################
 
                 for f in range(grid_size): # this loops for stacks in z
 
@@ -461,7 +715,8 @@ class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
                 counter_output_task.stop() # this stops the counter NI-DAQmx task - free-ing the reserved cDAQ card resources
                 task1.stop() # this stops the hardware-based internal clock NI-DAQmx task - free-ing the reserved cDAQ card resources
 
-                ############################################ end XZ scanning script #################################################
+            scan_galvo.close()
+            ############################################ end XZ scanning script #################################################
 
             ############################################### plotting XZ scan data in plot ####################################################
             self.sc.axes.cla()
@@ -474,10 +729,59 @@ class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
             self.sc.axes.set_title("XZ_scan_083122_y_voltage=%f_V" % initial_y_driving_voltage, fontsize = 8)
             self.sc.draw()
             # print("xz_scan finished")
+            most_recent_data_array = xz_scan_data_array
 
-        # YZ scan function
+        # xz_scan resolution check then run fnc
+        def xz_scan_resolution_validation_fnc():
+
+            res_min_condition = 20 # set the min allowed resolution for scanning
+            res_max_condition = 900 # set the max allowed resolution for scanning
+
+            xz_scan_resolution_test_condition = False # define resolution validation bool for xz scan
+
+            while xz_scan_resolution_test_condition is False: # this initiates checking the resolution parameter
+
+                # checking for out of bounds of min and max conditions above
+                if int(xz_scan_resolution_qlineedit.text()) < res_min_condition or int(xz_scan_resolution_qlineedit.text()) > res_max_condition: # TODO: or negative or not a number or too large
+
+                    display_resolution_error_window_fnc() # call the error message pop-up window
+                    break # exit the checking loop: failed
+
+                # if parameter is in bounds; run scan
+                elif int(xz_scan_resolution_qlineedit.text()) > res_min_condition and int(xz_scan_resolution_qlineedit.text()) < res_max_condition:
+
+                    xz_scan_resolution_test_condition == True
+                    print_XZ_scan_parameters_fnc(self) # call the print user-entered parameters fnc
+                    run_xz_scan_fnc() # call the run xz scan method fnc
+                    break # exit the checking loop: passed
+
+        ########### YZ scanning #############
+        # print_YZ_scan_parameters_fnc
+        def print_YZ_scan_parameters_fnc(self, parent = Child): # this fnc does...
+            print("YZ_SCAN PARAMETERS/INFO: ", end = "")
+            print("YZ_scan resolution = %d, " % int(yz_scan_resolution_qlineedit.text()), end = "")
+            print("YZ_scan counter read time = %2f, " % round(float(yz_scan_read_time_qlineedit.text()), 2), end = "")
+            print("YZ_scan min Y driving voltage = %2f, " % float(yz_scan_y_voltage_min_qlineedit.text()), end = "")
+            print("YZ_scan max Y driving voltage = %2f, " % float(yz_scan_y_voltage_max_qlineedit.text()), end = "")
+            print("YZ_scan X driving voltage = %2f, " % float(yz_scan_x_voltage_qlineedit.text()), end = "")
+            print("YZ_scan z-piezo min driving voltage = %2f, " % float(yz_scan_z_piezo_min_voltage_qlineedit.text()), end = "")
+            print("YZ_scan z-piezo max driving voltage = %2f." % float(yz_scan_z_piezo_max_voltage_qlineedit.text()))
+    
+        # run YZ scan function
         def run_yz_scan_fnc(): # this fnc runs the YZ scan script
             # print("YZ scan started")
+
+            """
+            This cell runs a YZ only scan. It currently creates and then populates a user defined size numpy array according to a set counter acquisition time and a motor
+step voltage setting. Additionally, the initial driving voltage for the X and Y motors can be set according to the desired scanning range. This scanning program runs in a snake pattern, it scan the first row left to right, moves up one row, 
+then scans right to left and continues. Alternatives would be scanning left to right, and resetting the position of the laser on the next higher row and scanning again left 
+to right OR scanning in a "circular" patter either CW or CCW from outside to inside or inside to outside. The chosen method was picked for simplicity of understanding. The 
+scanning loops are present within NI-DAQmx tasks to speed up the program. Starting and stopping a NI-DAQmx task repeatedly slows down the program dramatically. So, the 
+counter and hardware clock task are started once, then the scanning program is run, and then the counter and clock tasks are closed -un-reserving the hardware resources. 
+This cell uses the "DAQAnalogOutputs" function from a written class file at:
+C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contrib_drivers/drivers/NationalInstruments/class_file. Slashes are reversed to run
+            """
+
             ################################################################################## card 2 (AO) ########################################################################
 
             # naming the instrument
@@ -520,7 +824,10 @@ class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
             z_piezo_drive_voltage_step = (initial_z_piezo_driving_voltage + (desired_end_z_piezo_voltage)) / grid_size
 
             # create dataset to populate
+            global yz_scan_data_array
             yz_scan_data_array = np.zeros((grid_size, grid_size))
+            global most_recent_data_array
+            most_recent_data_array = np.zeros((grid_size, grid_size))
 
             # initializing variables to store read counter info.
             output_value = 0
@@ -624,6 +931,8 @@ class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
                 counter_output_task.stop() # this stops the counter NI-DAQmx task - free-ing the reserved cDAQ card resources
                 task1.stop() # this stops the hardware-based internal clock NI-DAQmx task - free-ing the reserved cDAQ card resources
 
+            scan_galvo.close()
+
             ############################################### plotting XZ scan data in plot ####################################################
             self.sc.axes.cla()
             xz_scan_plot = self.sc.axes.pcolormesh(yz_scan_data_array, cmap = "inferno")
@@ -635,18 +944,43 @@ class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
             self.sc.axes.set_title("YZ_scan_083122_x_voltage=%f_V" % initial_x_driving_voltage, fontsize = 8)
             self.sc.draw()
             # print("YZ scan complete")
+            most_recent_data_array = yz_scan_data_array
+    
+        # yz_scan resolution check then run fnc
+        def yz_scan_resolution_validation_fnc():
 
-        ############################################################# left window #####################################################################
+            res_min_condition = 20 # set the min allowed resolution for scanning
+            res_max_condition = 900 # set the max allowed resolution for scanning
+
+            yz_scan_resolution_test_condition = False # define resolution validation bool for yz scan
+
+            while yz_scan_resolution_test_condition is False: # this initiates checking the resolution parameter
+
+                # checking for out of bounds of min and max conditions above
+                if int(yz_scan_resolution_qlineedit.text()) < res_min_condition or int(yz_scan_resolution_qlineedit.text()) > res_max_condition: # TODO: or negative or not a number or too large
+
+                    display_resolution_error_window_fnc() # call the error message pop-up window
+                    break # exit the checking loop: failed
+
+                # if parameter is in bounds; run scan
+                elif int(yz_scan_resolution_qlineedit.text()) > res_min_condition and int(yz_scan_resolution_qlineedit.text()) < res_max_condition:
+
+                    yz_scan_resolution_test_condition == True
+                    print_YZ_scan_parameters_fnc(self) # call the print user-entered parameters fnc
+                    run_yz_scan_fnc() # call the run yz scan method fnc
+                    break # exit the checking loop: passed
+
+        ############################################################# left half window #####################################################################
         left_window = QFrame(self)
         left_window.setFrameShape(QFrame.StyledPanel)
         left_window.setFixedSize(380, 390)
 
-        ############################################################### right window ###################################################################
+        ############################################################### right half window ###################################################################
         right_window = QFrame(self)
         right_window.setFrameShape(QFrame.StyledPanel)
         right_window.setFixedSize(390, 390)
 
-        ##################################################### plot ##################################################################
+        ##################################################### plot in right window ##################################################################
 
         plot_res = 3.85
         self.sc = MplCanvas(self, width = plot_res, height = plot_res, dpi = 100.5)                         # changing dpi does something
@@ -668,6 +1002,20 @@ class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
         
         ##################################### overall ####################################
 
+        ############ begin save data section ###############
+        save_scan_data_button = QPushButton("Save scan data:", self) # create the save scan data button
+        save_scan_data_button.setParent(left_window) # set the "parent" bound of the save scan data button
+        save_scan_data_button.resize(90, 20) # resize the save scan data button
+        save_scan_data_button.move(15, 290) # position the save scan data button in the left winodw
+        save_scan_data_button.clicked.connect(save_scan_data_fnc)
+
+        save_scan_data_qlineedit = QLineEdit(self) # qlineedit
+        save_scan_data_qlineedit.setParent(left_window)
+        save_scan_data_qlineedit.resize(220, 20)
+        save_scan_data_qlineedit.move(110, 290)
+        ############ bendegin save data section ###############
+
+        # attempt at displaying Tex text as a QLabel
         pageSource = """
                     <html>
 
@@ -704,6 +1052,7 @@ class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
         #########################################################################################
 
         xy_scan_widgets_left_x_justify = 5
+        xy_scan_parameters_validated_Q = False
 
         # XY scan
         xy_scan_label_widget = QLabel("XY scan", self) # widget
@@ -783,13 +1132,7 @@ class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
         xy_scan_run_button.setParent(left_window)
         xy_scan_run_button.resize(60, 40)
         xy_scan_run_button.move(15, 215 + row_y_adjust + overall_y_adjust)
-        xy_scan_run_button.clicked.connect(print_XY_scan_parameters_fnc)
-        xy_scan_run_button.clicked.connect(run_xy_scan_fnc)
-        # try:
-        #     xy_scan_run_button.clicked.connect(run_xy_scan_fnc)
-        # except KeyError:
-        #     scan_galvo.close()
-        #     xy_scan_run_button.clicked.connect(run_xy_scan_fnc)
+        xy_scan_run_button.clicked.connect(xy_scan_resolution_validation_fnc) # this framework is limited currently to only validating resolution
 
         #######################################################################################
         ####################################### XZ scanning ###################################
@@ -875,8 +1218,7 @@ class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
         xz_scan_run_button.setParent(left_window)
         xz_scan_run_button.resize(60, 40)
         xz_scan_run_button.move(10 + xz_scan_widgets_left_x_justify, 215 + row_y_adjust + overall_y_adjust)
-        xz_scan_run_button.clicked.connect(print_XZ_scan_parameters_fnc)
-        xz_scan_run_button.clicked.connect(run_xz_scan_fnc)
+        xz_scan_run_button.clicked.connect(xz_scan_resolution_validation_fnc) # this framework is limited currently to only validating resolution
 
         #####################################################################################
         ####################################### YZ scanning #################################
@@ -962,8 +1304,7 @@ class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
         yz_scan_run_button.setParent(left_window)
         yz_scan_run_button.resize(60, 40)
         yz_scan_run_button.move(15 + yz_scan_widgets_left_x_justify, 215 + row_y_adjust + overall_y_adjust)
-        yz_scan_run_button.clicked.connect(print_YZ_scan_parameters_fnc)
-        yz_scan_run_button.clicked.connect(run_yz_scan_fnc)
+        yz_scan_run_button.clicked.connect(yz_scan_resolution_validation_fnc) # this framework is limited currently to only validating resolution
 
 ####################################################################### context menu ######################################################################
 
@@ -1070,3 +1411,69 @@ if __name__ == '__main__':
 # self.sc.axes.pcolormesh(data_set, cmap = "RdBu_r")
 # self.sc.axes.colorbar(plot_1, ax = self.sc.axes)
 # self.sc.axes.colorbar(plot_1)
+
+# if resolution < 20:
+#     make exception window show
+#     hard part: wait for user fix
+# else:
+#     print params
+#     run scan
+
+
+
+
+# xy_scan_run_button.clicked.connect(xy_scan_run_button_clicked_fnc)
+# xy_scan_run_button.clicked.connect(check resolution fnc)
+# if check resolution fnc():
+#     print_XY_scan_parameters_fnc(self)
+#     run_xy_scan_fnc()
+# else:
+
+# if xy_scan_parameters_validated_Q == True:
+#     xy_scan_run_button.clicked.connect(print_XY_scan_parameters_fnc) # call print_XY_scan_parameters_fnc
+#     xy_scan_run_button.clicked.connect(run_xy_scan_fnc) # call xy_scan_run_button.clicked.connect(run_xy_scan_fnc)
+# else:
+#     xy_scan_run_button.clicked.connect(xy_scan_input_validation_fnc)
+
+# global user_scan_parameters_validated_Q                                         # overall try to input validation
+# if user_scan_parameters_validated_Q == False:
+#     xy_scan_run_button.clicked.connect(scan_input_validation_fnc)                                # can this fnc return a bool checked here?
+# else:
+#     xy_scan_run_button.clicked.connect(print_XY_scan_parameters_fnc)
+#     xy_scan_run_button.clicked.connect(run_xy_scan_fnc)
+
+
+# try:                                                          # Try... Except for running mulitple scans
+#     xy_scan_run_button.clicked.connect(run_xy_scan_fnc)
+# except KeyError:
+#     scan_galvo.close()
+#     xy_scan_run_button.clicked.connect(run_xy_scan_fnc)
+
+#
+# def xy_scan_run_button_clicked_fnc(): # this fnc
+#     my_bool = False
+#     if resolution < 20:
+#         show exception window
+
+#     print_XY_scan_parameters_fnc(self)
+#     run_xy_scan_fnc()
+
+#
+# def xy_scan_input_validation_fnc(): # this fnc...
+#     print("EXCEPTION!")
+#     var == True
+
+# single option for input validation                                                             # INCOMPLETE- done locally instead
+# # scanning input validation fnc
+# """
+# This fnc is called before any scan (XY, XZ, or YZ) is run. It will confirm valid parameters are entered by the user to prevent erros and non-allowed driving
+# voltages sent to the objective z_piezo and/or the mirror motors. A list of checks is present below
+
+# 1. Scanning resolution...
+# """
+# def scan_input_validation_fnc(): # this fnc validates the input for user-entered scanning (XY, XZ, and YZ) parameters
+#     if int(xy_scan_resolution_qlineedit.text()) < 20:
+#         print("Exception!")
+#         global user_scan_parameters_validated_Q
+#         user_scan_parameters_validated_Q == True
+#     # print("resolution is: %d" % int(xy_scan_resolution_qlineedit.text()))
