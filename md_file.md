@@ -1791,3 +1791,6 @@ timing_end = datetime.datetime.now()
 print("(this cell) fnc call total time: %s" % (timing_end - timing_start))
 # print("differ by factor of: %d" % (difference))
 """
+
+# 083022
+useful link: https://forums.ni.com/t5/LabVIEW/Deleting-channels-from-task-reconfiguring-task/m-p/1544490#M571637
