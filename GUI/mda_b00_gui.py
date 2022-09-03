@@ -1,7 +1,7 @@
 """
-B00 gui for room-temp NV experiment control
+B00 gui for room-temp NV center measurement experiment control
 
-dates: some date in July -> 090122
+Dates: 070622 -> 090222
 
 Author: Miles D. Ackerman (undergraduate during the summer of 2022). Email: miles.ackerman1@gmail.com
 
@@ -25,9 +25,17 @@ all available digital output channels are created in one line: `ni_9263_ao_chann
 function of this application is running confocal scannign scripts in different planes (the XY plane at a specified Z height, the XZ plane across a 
 specified z-range, and the YZ plane at a specified X range). The GUI is split into 2 main setions, a left-half and a right-half section. The left-hand 
 section contains the input controls for running a specific scanning script. On the bottom of the left-hand section is an option to save the dataset 
-that was just scan and plotted on the right. The right-hand section conatins the output plot from a run scan. An important element of this application 
-is its use of the QCoDeS framework to create/initialize parts of the NI-cDAQ for use in scripts. Info about this data-acquisition framework can be 
-found at: https://qcodes.github.io/https://qcodes.github.io/.
+that was just scan and plotted on the right. Additionally, a text output box is present at the bottom of the left_window section. This is where the 
+user-entered scanning parameters are printed to. Here, the use ahs the option to select and then copy the scan parameter info for keeping a record. 
+there is also the option (currently commented out) to print this same info w/ its same format to the terminal. The right-hand section conatins the 
+output plot from a run scan. Include info more: this application impements live plotting for each scanning option.
+
+For the user of this application:
+1. This application was built within a virtual environment on this computer called: "NV_control" it can be found through the
+user/miniconda3/envs/NV_control. Within this enviornment THIS file and additonal referenec packages can be found
+2. Only limited input-validation/error checking has been implemented so far. Please be advised when running scanning programs. The LIMIT of the voltage 
+that can be driven to either mirror (or the objective's z_piezo) is 10 V. DO NOT EXCEED THIS VALUE. The system (as a cause of NI-DAQmx error 
+checking) will likely refuse such a request, but it is best practice to avoid.
 
 Helpful info. when reading through this application code:
 1. The NI-cDAQ card (chasis) is called (this can be changed using the NI-MAX software when the NI-DAQ card is connected to this computer)
@@ -42,61 +50,67 @@ cDAQ chasis (there are four available slots)
 # TODO: update naming conventions throughout scripts and entire file
 # TODO: can about window be set to the center of the screen regardles of the position of the main window?
 # TODO: fix allowing scans to be run one after the other. Will "Try... Except" work?
-# 0901 this above is fixed. However, the fix lies in the implementation of validating the resolution input. If the input-validation framework changes 
+# 090122 this above is fixed. However, the fix lies in the implementation of validating the resolution input. If the input-validation framework changes 
 # (as it should bc it is limited to only checking reoslution now) the allowed-repeated-scanning functionality MUST be re-written
 # TODO: cont. below
 """
 Input validation (resolution, min and max voltages for axes)
-Multile scans w/out closing programs (scan_galvo.close) (use Try... Except?)
+Multile scans w/out closing programs (scan_galvo.close) (use Try... Except?) -fixed; not ideal
 Saving scan data/images
 Progress (scanning) bar
 Live plot updating?
 Point size minimum based on wavelength of used laser
-Date (current) for plot labes
 input validation method is currently only limited to checking resolutions setting per each scan
 """
 
 #################################################################### imports ###################################################################################
-from argparse import ONE_OR_MORE
-from ast import AugAssign
-# from curses import window
+
+# general packages
 import sys
 import nidaqmx
 import numpy
 import pyqtgraph as pg
+from datetime import date
+
+# MatPlotLib plotting packages
+import matplotlib
+matplotlib.use('Qt5Agg')
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+
+# QCoDeS -this only imports needed classes from a document not other QCoDeS functionality
+from qcodes_contrib_drivers.drivers.NationalInstruments.DAQ import *
+from qcodes_contrib_drivers.drivers.NationalInstruments.class_file import *
+
+# PyQt5, this is the framework that builds the GUI
+import PyQt5
 from PyQt5.QtWidgets import *
 from PyQt5.QtGui import *
 from PyQt5.QtCore import *
 from PyQt5 import QtWidgets
 from PyQt5.QtGui import QPixmap
-import matplotlib
-matplotlib.use('Qt5Agg')
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
-from matplotlib.figure import Figure
-import time
-
-# packages 083122 start
-import qcodes as qc
-import nidaqmx
-import os
-from time import sleep
-from datetime import datetime
-import matplotlib as mpl
-import matplotlib.pyplot as plt
-
-# import qcodes contrib_drivers NI package (all)
-from qcodes_contrib_drivers.drivers.NationalInstruments.DAQ import *
-from qcodes_contrib_drivers.drivers.NationalInstruments.class_file import *
-
 from PyQt5.QtWidgets import QApplication
-from PyQt5.QtWebEngineWidgets import QWebEngineView
-
 from PyQt5.QtWidgets import QMessageBox
 
-############### globals ##############
+############### global variable ##############
 any_script_run_one_Q = False # for multiple scanning
 
-# temp_holding_data_array = numpy.zeros()
+############### prelims #######################
+get_todays_date = date.today() # this is used for creating the final plot's plot labels
+
+todays_date = get_todays_date.strftime("%m%d%Y") # this is used for creating the final plot's plot labels
+
+############################# OLD ####################################
+# def clear_plot():
+#     print("Hello world!")
+#     plot_res = 3.89
+#     self.sc = MplCanvas(self, width = plot_res, height = plot_res, dpi = 110)                         # changing dpi does something to scale of figure
+#     self.sc.move(2, 2)
+#     self.sc.setParent(right_window)
+#     self.sc.axes.xaxis.set_tick_params(labelsize = 8)
+#     self.sc.axes.yaxis.set_tick_params(labelsize = 8)
+###################################################################
 
 ################################################################## "Make_Error_Window_2" Class ######################################################################
 class Make_Error_Window_2(QtWidgets.QMainWindow): # create the "Make_Error_Window_2" for displaying a new window with error content
@@ -109,8 +123,8 @@ class Make_Error_Window_2(QtWidgets.QMainWindow): # create the "Make_Error_Windo
 
         self.title = "Error" # define the title of the error window
 
-        self.top    = 350 # set the display location of the error window
-        self.left   = 675 # can this be set to the center of the screen regardles of the position of the main window?
+        self.top = 350 # set the display location of the error window
+        self.left = 675 # can this be set to the center of the screen regardles of the position of the main window?
 
         self.error_window_width  = 205 # define the width of the error window
         self.error_window_height = 50 # define the height of the error window
@@ -135,8 +149,6 @@ class Make_Error_Window_2(QtWidgets.QMainWindow): # create the "Make_Error_Windo
 
         self.setWindowTitle(self.title) # set the title of the displayed error window
         self.setGeometry(self.left, self.top, self.error_window_width, self.error_window_height) # set the geometry (size) of the displayed error window
-
-
 
 ################################################################## "Make_Error_Window" Class ######################################################################
 class Make_Error_Window(QtWidgets.QMainWindow): # create the "Make_Error_Window" for displaying a new window with error content
@@ -208,7 +220,7 @@ class Make_About_Window(QtWidgets.QMainWindow): # create the "Make_About_Window"
         about_window_content_line_2.move(0 + about_window_left_justify_adjust, 15 + about_window_top_justify_adjust)
         about_window_content_line_2.resize(300, 15)
 
-        about_window_content_line_3 = QLabel("Last modified: 090122", self)
+        about_window_content_line_3 = QLabel("Last modified: 090222", self)
         about_window_content_line_3.move(0 + about_window_left_justify_adjust, 30 + about_window_top_justify_adjust)
         about_window_content_line_3.resize(300, 15)
 
@@ -224,6 +236,7 @@ class Make_About_Window(QtWidgets.QMainWindow): # create the "Make_About_Window"
 class MplCanvas(FigureCanvasQTAgg):
 
     def __init__(self, parent = None, width = 10, height = 10, dpi = 1000):
+
         # fig = Figure(figsize = (width, height), dpi = dpi)
         # self.axes = fig.add_subplot()
         self.fig, self.axes = plt.subplots(figsize=(width, height), dpi=dpi, tight_layout = True)
@@ -237,6 +250,7 @@ class Parent(QtWidgets.QMainWindow):
         super().__init__(parent)
 
         def display_about_window():
+
             self.Make_About_Window = Make_About_Window()
             self.Make_About_Window.show()
 
@@ -245,7 +259,7 @@ class Parent(QtWidgets.QMainWindow):
         # setting up main GUI window
         self.child_widget = Child(parent = self)
         self.setCentralWidget(self.child_widget) # setting the central widget of the main window (Parent class) to the Child class
-        gui_window_height = 440 # define the main window height
+        gui_window_height = 470 # define the main window height
         gui_window_width = 800 # define the main window width
         self.setGeometry(400, 200, gui_window_width, gui_window_height) # x-coord, y-coord, width, height
         self.setMinimumSize(gui_window_width, gui_window_height) # set the main window min size
@@ -279,11 +293,13 @@ class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
         ########################################################## CHILD functions ################################################################################
         
         ########## overall #################
-        # display error window fnc
+
+        # display invalid resolution error window fnc
         def display_resolution_error_window_fnc(): # this fnc calls the "Make_Error_Window" class to display an eror message indicating user input is not validated
             self.Make_Error_Window = Make_Error_Window()
             self.Make_Error_Window.show()
-        
+
+        # display invalid saving address error window fnc   
         def display_save_address_length_error_window_fnc(): # this fnc calls the "Make_Error_Window" class to display an eror message indicating user input is not validated
             self.Make_Error_Window_2 = Make_Error_Window_2()
             self.Make_Error_Window_2.show()
@@ -323,14 +339,30 @@ class Child(QtWidgets.QWidget):#, **kwargs): # kwargs needed?
         ########### XY scanning #############
         # print/display XY scan parameters fnc
         def print_XY_scan_parameters_fnc(self, parent = Child): # this fnc does...
-            print("XY_SCAN PARAMETERS/INFO: ", end = "")
-            print("XY_scan resolution = %d, " % int(xy_scan_resolution_qlineedit.text()), end = "")
-            print("XY_scan counter read time = %2f, " % round(float(xy_scan_read_time_qlineedit.text()), 2), end = "")
-            print("XY_scan min x driving voltage = %2f, " % float(xy_scan_x_voltage_min_qlineedit.text()), end = "")
-            print("XY_scan max x driving voltage = %2f, " % float(xy_scan_x_voltage_max_qlineedit.text()), end = "")
-            print("XY_scan min y driving voltage = %2f, " % float(xy_scan_y_voltage_min_qlineedit.text()), end = "")
-            print("XY_scan max y driving voltage = %2f, " % float(xy_scan_y_voltage_max_qlineedit.text()), end = "")
-            print("XY_scan z-piezo driving voltage = %2f." % float(xy_scan_z_piezo_voltage_qlineedit.text()))
+
+            # print("XY_SCAN PARAMETERS/INFO: ", end = "")                                    # this prints to the terminal
+            # print("XY_scan resolution = %d, " % int(xy_scan_resolution_qlineedit.text()), end = "")
+            # print("XY_scan counter read time = %2f, " % round(float(xy_scan_read_time_qlineedit.text()), 2), end = "")
+            # print("XY_scan min x driving voltage = %2f, " % float(xy_scan_x_voltage_min_qlineedit.text()), end = "")
+            # print("XY_scan max x driving voltage = %2f, " % float(xy_scan_x_voltage_max_qlineedit.text()), end = "")
+            # print("XY_scan min y driving voltage = %2f, " % float(xy_scan_y_voltage_min_qlineedit.text()), end = "")
+            # print("XY_scan max y driving voltage = %2f, " % float(xy_scan_y_voltage_max_qlineedit.text()), end = "")
+            # print("XY_scan z-piezo driving voltage = %2f." % float(xy_scan_z_piezo_voltage_qlineedit.text()))
+
+            # need to clear text box first
+            self.parameters_dsiplay_text_box.clear()
+
+            # this prints to the QTextBox in the left_window. The output of the user-selected scan parameters is printed below
+            self.parameters_dsiplay_text_box.setPlainText(
+                                                        "XY_SCAN PARAMETERS/INFO:\n"
+                                                        "XY_scan resolution = " + str(int(xy_scan_resolution_qlineedit.text())) + "\n"
+                                                        "XY_scan counter read time = " + str(float(xy_scan_read_time_qlineedit.text())) + "\n"
+                                                        "XY_scan min x driving voltage = " + str(float(xy_scan_x_voltage_min_qlineedit.text())) + "\n"
+                                                        "XY_scan max x driving voltage = " + str(float(xy_scan_x_voltage_max_qlineedit.text())) + "\n"
+                                                        "XY_scan min y driving voltage = " + str(float(xy_scan_y_voltage_min_qlineedit.text())) + "\n"
+                                                        "XY_scan max y driving voltage = " + str(float(xy_scan_y_voltage_max_qlineedit.text())) + "\n"
+                                                        "XY_scan z-piezo driving voltage = " + str(float(xy_scan_z_piezo_voltage_qlineedit.text()))
+                                                        )
         
         # run XY scanning function
         def run_xy_scan_fnc(): # this fnc runs the xy_scan per the user-entered parameters in the xy_scan qlineedits
@@ -345,8 +377,6 @@ counter and hardware clock task are started once, then the scanning program is r
 This cell uses the "DAQAnalogOutputs" function from a written class file at:
 C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contrib_drivers/drivers/NationalInstruments/class_file. Slashes are reversed to run
             """
-
-            # print("xy_scan started")
 
             ############################################################### begin scanning script #############################################################################################
                 
@@ -478,46 +508,99 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
                         ############# end important section ############
 
                         if f % 2 == 0: # this loop adjusts for sweeping back and forth along each alternating row
+
                             if k < (grid_size_x - 1):
+
                                 x_driving_voltage_to_change += x_drive_voltage_step # increment drive voltage forwards
                                 scan_galvo.voltage_cdaq1mod2ao0(x_driving_voltage_to_change) # step x motor
+
                             else:
                                 break
                         else:
                             if k < (grid_size_x - 1):
+
                                 x_driving_voltage_to_change -= x_drive_voltage_step # increment drive voltage backwards
                                 scan_galvo.voltage_cdaq1mod2ao0(x_driving_voltage_to_change) # step x motor
+
                             else:
                                 break
 
+                    ##################### updating plot section ####################
+                    # self.sc.axes.cla() # this does not seem to be needed
+
+                    self.sc.axes.pcolormesh(xy_scan_data_array, cmap = "inferno")
+                    self.sc.axes.set_xticks(np.arange(0, grid_size + 10, grid_size / 2), [initial_x_driving_voltage, int((initial_x_driving_voltage + desired_end_x_mirror_voltage) / 2), desired_end_x_mirror_voltage])
+                    self.sc.axes.set_yticks(np.arange(0, grid_size + 10, grid_size / 2), [initial_y_driving_voltage, int((initial_y_driving_voltage + desired_end_y_mirror_voltage) / 2), desired_end_y_mirror_voltage])
+                    self.sc.axes.xaxis.set_tick_params(labelsize = 8)
+                    self.sc.axes.yaxis.set_tick_params(labelsize = 8)
+
+                    self.sc.axes.set_xlabel("x_mirror_driving_voltage_(V)", fontsize = 8)
+                    self.sc.axes.set_ylabel("y_mirror_driving_voltage_(V)", fontsize = 8, labelpad = -9)
+
+                    self.sc.fig.canvas.draw()
+                    self.sc.fig.canvas.flush_events() #this line is very important
+                    ##################### updating plot section ####################
+
                     if f < (grid_size_y - 1): # this loop prevents from scanning an upper undesired row
+
                         y_driving_voltage_to_change += y_drive_voltage_step # increment drive voltage
                         scan_galvo.voltage_cdaq1mod2ao1(y_driving_voltage_to_change) # step y motor
+
                     else:
                         break
 
                 counter_output_task.stop() # this stops the counter NI-DAQmx task - free-ing the reserved cDAQ card resources
                 task1.stop() # this stops the hardware-based internal clock NI-DAQmx task - free-ing the reserved cDAQ card resources
 
-            scan_galvo.close()
+            scan_galvo.close() # this is where reeated scanning hinges on and needs to be re-implemented
 
             ############################################################### end scanning script #############################################################################################
 
             ############################################### plotting XY scan data in plot ####################################################
+            
+            # self.sc.fig.clear() # is this needed after implementing live plot updating?
             self.sc.axes.cla()
+
             plot = self.sc.axes.pcolormesh(xy_scan_data_array, cmap = "inferno")
-            # self.sc.colorbar(plot, ax = self.sc.axes)
             self.sc.axes.set_xticks(np.arange(0, grid_size + 10, grid_size / 2), [initial_x_driving_voltage, int((initial_x_driving_voltage + desired_end_x_mirror_voltage) / 2), desired_end_x_mirror_voltage])
             self.sc.axes.set_yticks(np.arange(0, grid_size + 10, grid_size / 2), [initial_y_driving_voltage, int((initial_y_driving_voltage + desired_end_y_mirror_voltage) / 2), desired_end_y_mirror_voltage])
+            self.xy_scan_plot_colorbar = self.sc.fig.colorbar(plot, ax = self.sc.axes, pad = 0.02, aspect = 15)
+            self.xy_scan_plot_colorbar.formatter.set_powerlimits((0, 0))
+            self.sc.axes.xaxis.set_tick_params(labelsize = 8)
+            self.sc.axes.yaxis.set_tick_params(labelsize = 8)
+            self.xy_scan_plot_colorbar.ax.tick_params(labelsize = 7)
             self.sc.axes.set_xlabel("x_mirror_driving_voltage_(V)", fontsize = 8)
-            self.sc.axes.set_ylabel("y_mirror_driving_voltage_(V)", fontsize = 8)
-            self.sc.axes.set_title("XY_scan_083122_z-piezo@%d_microns" % int((z_piezo_set_voltage * 10)), fontsize = 8)
+            self.sc.axes.set_ylabel("y_mirror_driving_voltage_(V)", fontsize = 8, labelpad = -9)
+            self.sc.axes.set_title("XY_scan_%s_z-piezo@%d_microns" % (todays_date, int((z_piezo_set_voltage * 10))), fontsize = 8)
             self.sc.draw()
-            # print("xy_scan finished")
-            most_recent_data_array = xy_scan_data_array
+
+            most_recent_data_array = xy_scan_data_array # make temp holding global data_array the same as xy_scan_data_array
 
         # xy_scan resolution check then run fnc
         def xy_scan_resolution_validation_fnc():
+
+            self.sc.axes.cla()
+
+            # the try-except frameworks are used to refresh the plotted figs -removing the color bars associated with a previous plotted data
+            try:
+                self.xy_scan_plot_colorbar.remove()
+
+            except (AttributeError, ValueError):
+                pass
+        
+            try:
+                self.yz_scan_plot_colorbar.remove()
+
+            except (AttributeError, ValueError):
+                pass
+
+            try:
+                self.xz_scan_plot_colorbar.remove()
+            
+            except (AttributeError, ValueError):
+                pass
+        
+        #################################### resolution checking ##################################
 
             res_min_condition = 20 # set the min allowed resolution for scanning
             res_max_condition = 900 # set the max allowed resolution for scanning
@@ -527,13 +610,14 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
             while xy_scan_resolution_test_condition is False: # this initiates checking the resolution parameter
 
                 # checking for out of bounds of min and max conditions above
-                if int(xy_scan_resolution_qlineedit.text()) < res_min_condition or int(xy_scan_resolution_qlineedit.text()) > res_max_condition: # TODO: or negative or not a number or too large
+                # TODO: or negative or not a number or too large
+                if int(xy_scan_resolution_qlineedit.text()) < res_min_condition or int(xy_scan_resolution_qlineedit.text()) > res_max_condition:
 
                     display_resolution_error_window_fnc() # call the error message pop-up window
                     break # exit the checking loop: failed
 
                 # if parameter is in bounds; run scan
-                elif int(xy_scan_resolution_qlineedit.text()) > res_min_condition and int(xy_scan_resolution_qlineedit.text()) < res_max_condition:
+                elif int(xy_scan_resolution_qlineedit.text()) >= res_min_condition and int(xy_scan_resolution_qlineedit.text()) <= res_max_condition:
 
                     xy_scan_resolution_test_condition == True
                     print_XY_scan_parameters_fnc(self) # call the print user-entered parameters fnc
@@ -543,18 +627,34 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         ########### XZ scanning #############
         # print_XZ_scan_parameters_fnc
         def print_XZ_scan_parameters_fnc(self, parent = Child): # this fnc does...
-            print("XZ_SCAN PARAMETERS/INFO: ", end = "")
-            print("XZ_scan resolution = %d, " % int(xz_scan_resolution_qlineedit.text()), end = "")
-            print("XZ_scan counter read time = %2f, " % round(float(xz_scan_read_time_qlineedit.text()), 2), end = "")
-            print("XZ_scan min x driving voltage = %2f, " % float(xz_scan_x_voltage_min_qlineedit.text()), end = "")
-            print("XZ_scan max x driving voltage = %2f, " % float(xz_scan_x_voltage_max_qlineedit.text()), end = "")
-            print("XZ_scan y driving voltage = %2f, " % float(xz_scan_y_voltage_qlineedit.text()), end = "")
-            print("XZ_scan z-piezo min driving voltage = %2f, " % float(xz_scan_z_piezo_min_voltage_qlineedit.text()), end = "")
-            print("XZ_scan z-piezo max driving voltage = %2f." % float(xz_scan_z_piezo_max_voltage_qlineedit.text()))
+
+            # print("XZ_SCAN PARAMETERS/INFO: ", end = "")                                    # this prints to the terminal
+            # print("XZ_scan resolution = %d, " % int(xz_scan_resolution_qlineedit.text()), end = "")
+            # print("XZ_scan counter read time = %2f, " % round(float(xz_scan_read_time_qlineedit.text()), 2), end = "")
+            # print("XZ_scan min x driving voltage = %2f, " % float(xz_scan_x_voltage_min_qlineedit.text()), end = "")
+            # print("XZ_scan max x driving voltage = %2f, " % float(xz_scan_x_voltage_max_qlineedit.text()), end = "")
+            # print("XZ_scan y driving voltage = %2f, " % float(xz_scan_y_voltage_qlineedit.text()), end = "")
+            # print("XZ_scan z-piezo min driving voltage = %2f, " % float(xz_scan_z_piezo_min_voltage_qlineedit.text()), end = "")
+            # print("XZ_scan z-piezo max driving voltage = %2f." % float(xz_scan_z_piezo_max_voltage_qlineedit.text()))
+
+
+            # need to clear text box first
+            self.parameters_dsiplay_text_box.clear()
+
+            # this prints to the QTextBox in the left_window. The output of the user-selected scan parameters is printed below
+            self.parameters_dsiplay_text_box.setPlainText(
+                                                        "XZ_SCAN PARAMETERS/INFO:\n"
+                                                        "XZ_scan resolution = " + str(int(xz_scan_resolution_qlineedit.text())) + "\n"
+                                                        "XZ_scan counter read time = " + str(float(xz_scan_read_time_qlineedit.text())) + "\n"
+                                                        "XZ_scan min x driving voltage = " + str(float(xz_scan_x_voltage_min_qlineedit.text())) + "\n"
+                                                        "XZ_scan max x driving voltage = " + str(float(xz_scan_x_voltage_max_qlineedit.text())) + "\n"
+                                                        "XZ_scan y driving voltage = " + str(float(xz_scan_y_voltage_qlineedit.text())) + "\n"
+                                                        "XZ_scan z-piezo min driving voltage = " + str(float(xz_scan_z_piezo_min_voltage_qlineedit.text())) + "\n"
+                                                        "XZ_scan z-piezo max driving voltage = " + str(float(xz_scan_z_piezo_max_voltage_qlineedit.text()))
+                                                        )
         
         # run XZ scan fnc
         def run_xz_scan_fnc(): # this fnc runs the xy_scan per the user-entered parameters in the xy_scan qlineedits
-            # print("xz_scan started")
 
             """
             This cell runs a XZ scan. It currently creates and then populates a user defined size numpy array according to a set counter acquisition time and a motor
@@ -705,6 +805,19 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
                                 scan_galvo.voltage_cdaq1mod2ao0(x_driving_voltage_to_change) # step y mirror
                             else:
                                 break
+                    
+                    ##################### updating plot section ####################
+                    # self.sc.axes.cla() # this does not seem to be needed
+                    self.sc.axes.pcolormesh(xz_scan_data_array, cmap = "inferno")
+                    self.sc.axes.set_xticks(np.arange(0, grid_size + 10, grid_size / 2), [initial_x_driving_voltage, int((initial_x_driving_voltage + desired_end_x_mirror_voltage) / 2), desired_end_x_mirror_voltage])
+                    self.sc.axes.set_yticks(np.arange(0, grid_size + 10, grid_size / 2), [int(initial_z_piezo_driving_voltage * 10), (int(initial_z_piezo_driving_voltage * 10) + int(desired_end_z_piezo_voltage * 10)) / 2, int(desired_end_z_piezo_voltage * 10)])
+                    self.sc.axes.xaxis.set_tick_params(labelsize = 8)
+                    self.sc.axes.yaxis.set_tick_params(labelsize = 8)
+                    self.sc.axes.set_xlabel("x_mirror_driving_voltage_(V)", fontsize = 8)
+                    self.sc.axes.set_ylabel("objective_z-piezo_height_(microns)", fontsize = 8)
+                    self.sc.fig.canvas.draw()
+                    self.sc.fig.canvas.flush_events()
+                    ##################### updating plot section ####################
 
                     if f < (grid_size - 1): # this loop
                         z_piezo_driving_voltage_to_change += z_piezo_drive_voltage_step # increment drive voltage
@@ -721,18 +834,42 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
             ############################################### plotting XZ scan data in plot ####################################################
             self.sc.axes.cla()
             xz_scan_plot = self.sc.axes.pcolormesh(xz_scan_data_array, cmap = "inferno")
-            # self.sc.colorbar(plot, ax = self.sc.axes)
+            xz_scan_plot_colorbar = self.sc.fig.colorbar(xz_scan_plot, ax = self.sc.axes, pad = 0.02, aspect = 15)
+            xz_scan_plot_colorbar.formatter.set_powerlimits((0, 0))
+            self.sc.axes.xaxis.set_tick_params(labelsize = 8)
+            self.sc.axes.yaxis.set_tick_params(labelsize = 8)
+            xz_scan_plot_colorbar.ax.tick_params(labelsize = 7)
             self.sc.axes.set_xticks(np.arange(0, grid_size + 10, grid_size / 2), [initial_x_driving_voltage, int((initial_x_driving_voltage + desired_end_x_mirror_voltage) / 2), desired_end_x_mirror_voltage])
             self.sc.axes.set_yticks(np.arange(0, grid_size + 10, grid_size / 2), [int(initial_z_piezo_driving_voltage * 10), (int(initial_z_piezo_driving_voltage * 10) + int(desired_end_z_piezo_voltage * 10)) / 2, int(desired_end_z_piezo_voltage * 10)])
             self.sc.axes.set_xlabel("x_mirror_driving_voltage_(V)", fontsize = 8)
             self.sc.axes.set_ylabel("objective_z-piezo_height_(microns)", fontsize = 8)
-            self.sc.axes.set_title("XZ_scan_083122_y_voltage=%f_V" % initial_y_driving_voltage, fontsize = 8)
+            self.sc.axes.set_title("XZ_scan_%s_y_voltage=%f_V" % (todays_date, initial_y_driving_voltage), fontsize = 8)
             self.sc.draw()
-            # print("xz_scan finished")
+
             most_recent_data_array = xz_scan_data_array
 
         # xz_scan resolution check then run fnc
         def xz_scan_resolution_validation_fnc():
+
+            self.sc.axes.cla()
+
+            try:
+                self.xz_scan_plot_colorbar.remove()
+
+            except (AttributeError, ValueError):
+                pass
+
+            try:
+                self.yz_scan_plot_colorbar.remove()
+
+            except (AttributeError, ValueError):
+                pass
+            
+            try:
+                self.xy_scan_plot_colorbar.remove()
+            
+            except (AttributeError, ValueError):
+                pass
 
             res_min_condition = 20 # set the min allowed resolution for scanning
             res_max_condition = 900 # set the max allowed resolution for scanning
@@ -748,25 +885,42 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
                     break # exit the checking loop: failed
 
                 # if parameter is in bounds; run scan
-                elif int(xz_scan_resolution_qlineedit.text()) > res_min_condition and int(xz_scan_resolution_qlineedit.text()) < res_max_condition:
+                elif int(xz_scan_resolution_qlineedit.text()) >= res_min_condition and int(xz_scan_resolution_qlineedit.text()) <= res_max_condition:
 
                     xz_scan_resolution_test_condition == True
                     print_XZ_scan_parameters_fnc(self) # call the print user-entered parameters fnc
                     run_xz_scan_fnc() # call the run xz scan method fnc
                     break # exit the checking loop: passed
 
-        ########### YZ scanning #############
+        ########################## YZ scanning ############################
+
         # print_YZ_scan_parameters_fnc
         def print_YZ_scan_parameters_fnc(self, parent = Child): # this fnc does...
-            print("YZ_SCAN PARAMETERS/INFO: ", end = "")
-            print("YZ_scan resolution = %d, " % int(yz_scan_resolution_qlineedit.text()), end = "")
-            print("YZ_scan counter read time = %2f, " % round(float(yz_scan_read_time_qlineedit.text()), 2), end = "")
-            print("YZ_scan min Y driving voltage = %2f, " % float(yz_scan_y_voltage_min_qlineedit.text()), end = "")
-            print("YZ_scan max Y driving voltage = %2f, " % float(yz_scan_y_voltage_max_qlineedit.text()), end = "")
-            print("YZ_scan X driving voltage = %2f, " % float(yz_scan_x_voltage_qlineedit.text()), end = "")
-            print("YZ_scan z-piezo min driving voltage = %2f, " % float(yz_scan_z_piezo_min_voltage_qlineedit.text()), end = "")
-            print("YZ_scan z-piezo max driving voltage = %2f." % float(yz_scan_z_piezo_max_voltage_qlineedit.text()))
-    
+
+            # print("YZ_SCAN PARAMETERS/INFO: ", end = "")
+            # print("YZ_scan resolution = %d, " % int(yz_scan_resolution_qlineedit.text()), end = "")
+            # print("YZ_scan counter read time = %2f, " % round(float(yz_scan_read_time_qlineedit.text()), 2), end = "")
+            # print("YZ_scan min Y driving voltage = %2f, " % float(yz_scan_y_voltage_min_qlineedit.text()), end = "")
+            # print("YZ_scan max Y driving voltage = %2f, " % float(yz_scan_y_voltage_max_qlineedit.text()), end = "")
+            # print("YZ_scan X driving voltage = %2f, " % float(yz_scan_x_voltage_qlineedit.text()), end = "")
+            # print("YZ_scan z-piezo min driving voltage = %2f, " % float(yz_scan_z_piezo_min_voltage_qlineedit.text()), end = "")
+            # print("YZ_scan z-piezo max driving voltage = %2f." % float(yz_scan_z_piezo_max_voltage_qlineedit.text()))
+
+            # need to clear text box first
+            self.parameters_dsiplay_text_box.clear()
+
+            # this prints to the QTextBox in the left_window. The output of the user-selected scan parameters is printed below
+            self.parameters_dsiplay_text_box.setPlainText(
+                        "YZ_SCAN PARAMETERS/INFO:\n"
+                        "YZ_scan resolution = " + str(int(yz_scan_resolution_qlineedit.text())) + "\n"
+                        "YZ_scan counter read time = " + str(float(yz_scan_read_time_qlineedit.text())) + "\n"
+                        "YZ_scan min Y driving voltage = " + str(float(yz_scan_y_voltage_min_qlineedit.text())) + "\n"
+                        "YZ_scan max Y driving voltage = " + str(float(yz_scan_y_voltage_max_qlineedit.text())) + "\n"
+                        "YZ_scan X driving voltage = " + str(float(yz_scan_x_voltage_qlineedit.text())) + "\n'"
+                        "YZ_scan z-piezo min driving voltage = " + str(float(yz_scan_z_piezo_min_voltage_qlineedit.text())) + "\n"
+                        "YZ_scan z-piezo max driving voltage = " + str(float(yz_scan_z_piezo_max_voltage_qlineedit.text()))
+                                                        )
+                
         # run YZ scan function
         def run_yz_scan_fnc(): # this fnc runs the YZ scan script
             # print("YZ scan started")
@@ -921,6 +1075,19 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
                                 scan_galvo.voltage_cdaq1mod2ao1(y_driving_voltage_to_change) # step y mirror
                             else:
                                 break
+                    
+                    ##################### updating plot section ####################
+                    # self.sc.axes.cla() # this does not seem to be needed
+                    self.sc.axes.pcolormesh(yz_scan_data_array, cmap = "inferno")
+                    self.sc.axes.set_xticks(np.arange(0, grid_size + 10, grid_size / 2), [initial_y_driving_voltage, int((initial_y_driving_voltage + desired_end_y_mirror_voltage) / 2), desired_end_y_mirror_voltage])
+                    self.sc.axes.set_yticks(np.arange(0, grid_size + 10, grid_size / 2), [int(initial_z_piezo_driving_voltage * 10), (int(initial_z_piezo_driving_voltage * 10) + int(desired_end_z_piezo_voltage * 10)) / 2, int(desired_end_z_piezo_voltage * 10)])
+                    self.sc.axes.xaxis.set_tick_params(labelsize = 8)
+                    self.sc.axes.yaxis.set_tick_params(labelsize = 8)
+                    self.sc.axes.set_xlabel("y_mirror_driving_voltage_(V)", fontsize = 8)
+                    self.sc.axes.set_ylabel("objective_z-piezo_height_(microns)", fontsize = 8)
+                    self.sc.fig.canvas.draw()
+                    self.sc.fig.canvas.flush_events()
+                    ##################### updating plot section ####################
 
                     if f < (grid_size - 1): # this loop
                         z_piezo_driving_voltage_to_change += z_piezo_drive_voltage_step # increment drive voltage
@@ -933,21 +1100,44 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
 
             scan_galvo.close()
 
-            ############################################### plotting XZ scan data in plot ####################################################
+            ############################################### plotting YZ scan data in plot ####################################################
             self.sc.axes.cla()
-            xz_scan_plot = self.sc.axes.pcolormesh(yz_scan_data_array, cmap = "inferno")
-            # self.sc.colorbar(plot, ax = self.sc.axes)
+            yz_scan_plot = self.sc.axes.pcolormesh(yz_scan_data_array, cmap = "inferno")
+            yz_scan_plot_colorbar = self.sc.fig.colorbar(yz_scan_plot, ax = self.sc.axes, pad = 0.02, aspect = 15)
+            yz_scan_plot_colorbar.formatter.set_powerlimits((0, 0))
+            self.sc.axes.xaxis.set_tick_params(labelsize = 8)
+            self.sc.axes.yaxis.set_tick_params(labelsize = 8)
+            yz_scan_plot_colorbar.ax.tick_params(labelsize = 7)
             self.sc.axes.set_xticks(np.arange(0, grid_size + 10, grid_size / 2), [initial_y_driving_voltage, int((initial_y_driving_voltage + desired_end_y_mirror_voltage) / 2), desired_end_y_mirror_voltage])
             self.sc.axes.set_yticks(np.arange(0, grid_size + 10, grid_size / 2), [int(initial_z_piezo_driving_voltage * 10), (int(initial_z_piezo_driving_voltage * 10) + int(desired_end_z_piezo_voltage * 10)) / 2, int(desired_end_z_piezo_voltage * 10)])
             self.sc.axes.set_xlabel("y_mirror_driving_voltage_(V)", fontsize = 8)
             self.sc.axes.set_ylabel("objective_z-piezo_height_(microns)", fontsize = 8)
-            self.sc.axes.set_title("YZ_scan_083122_x_voltage=%f_V" % initial_x_driving_voltage, fontsize = 8)
+            self.sc.axes.set_title("YZ_scan_%s_x_voltage=%f_V" % (todays_date, initial_x_driving_voltage), fontsize = 8)
             self.sc.draw()
-            # print("YZ scan complete")
             most_recent_data_array = yz_scan_data_array
     
         # yz_scan resolution check then run fnc
         def yz_scan_resolution_validation_fnc():
+
+            self.sc.axes.cla()
+
+            try:
+                self.yz_scan_plot_colorbar.remove()
+
+            except (AttributeError, ValueError):
+                pass
+            
+            try:
+                self.xy_scan_plot_colorbar.remove()
+            
+            except (AttributeError, ValueError):
+                pass
+                
+            try:
+                self.xz_scan_plot_colorbar.remove()
+            
+            except (AttributeError, ValueError):
+                pass
 
             res_min_condition = 20 # set the min allowed resolution for scanning
             res_max_condition = 900 # set the max allowed resolution for scanning
@@ -963,7 +1153,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
                     break # exit the checking loop: failed
 
                 # if parameter is in bounds; run scan
-                elif int(yz_scan_resolution_qlineedit.text()) > res_min_condition and int(yz_scan_resolution_qlineedit.text()) < res_max_condition:
+                elif int(yz_scan_resolution_qlineedit.text()) >= res_min_condition and int(yz_scan_resolution_qlineedit.text()) <= res_max_condition:
 
                     yz_scan_resolution_test_condition == True
                     print_YZ_scan_parameters_fnc(self) # call the print user-entered parameters fnc
@@ -973,24 +1163,44 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         ############################################################# left half window #####################################################################
         left_window = QFrame(self)
         left_window.setFrameShape(QFrame.StyledPanel)
-        left_window.setFixedSize(380, 390)
+        left_window.setFixedSize(340, 430)
+
+        # QTextEdit display for printing scan parameters to GUI window
+        """
+        This creates a textbox located in the lower left hand corner of the GUI. It is set (parent) to the left_window. When any scan script is run the 
+        parameters enterd by the user are collected from their respective QLineedits and then printed in a list to this QTextBox. This allows the user 
+        select and copy the parameters they used quickly in order to save them to an external file as documentation of scans run.
+
+        Room for improvement:
+        1. The date (get from "todays_date" that is already implemented) could be added to the first line of any scans parameter printing fnc
+        2. The info printed to this QTextBox could also and/or be saved to an external file for record/documentation
+        """
+
+        self.parameters_dsiplay_text_box = QTextEdit(left_window)
+        self.parameters_dsiplay_text_box.resize(320, 113)
+        self.parameters_dsiplay_text_box.move(10, 309)
+        self.parameters_dsiplay_text_box.setParent(left_window)
 
         ############################################################### right half window ###################################################################
         right_window = QFrame(self)
         right_window.setFrameShape(QFrame.StyledPanel)
-        right_window.setFixedSize(390, 390)
+        right_window.setFixedSize(430, 430)
 
         ##################################################### plot in right window ##################################################################
 
-        plot_res = 3.85
-        self.sc = MplCanvas(self, width = plot_res, height = plot_res, dpi = 100.5)                         # changing dpi does something
+        plot_res = 3.89
+        self.sc = MplCanvas(self, width = plot_res, height = plot_res, dpi = 110)                         # changing dpi does something to scale of figure
         self.sc.move(2, 2)
         self.sc.setParent(right_window)
-        self.sc.axes.set_title("plot_title_here", fontsize = 9)
-        self.sc.axes.set_xlabel("plot_x_label_here", fontsize = 8)
-        self.sc.axes.set_ylabel("plot_y_label_here", fontsize = 8)
+        self.sc.axes.xaxis.set_tick_params(labelsize = 8)
+        self.sc.axes.yaxis.set_tick_params(labelsize = 8)
+        # self.sc.fig.colorbar(plot, ax = self.sc.axes)
+        # self.sc.axes.set_title("plot_title_here", fontsize = 9)
+        # self.sc.axes.set_xlabel("plot_x_label_here", fontsize = 8)
+        # self.sc.axes.set_ylabel("plot_y_label_here", fontsize = 8)
 
         ############################################################# split left and right windows #########################################################
+        
         splitter1 = QSplitter(Qt.Horizontal)
         splitter1.addWidget(left_window)
         splitter1.addWidget(right_window)
@@ -1006,13 +1216,17 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         save_scan_data_button = QPushButton("Save scan data:", self) # create the save scan data button
         save_scan_data_button.setParent(left_window) # set the "parent" bound of the save scan data button
         save_scan_data_button.resize(90, 20) # resize the save scan data button
-        save_scan_data_button.move(15, 290) # position the save scan data button in the left winodw
+        save_scan_data_button.move(10, 280) # position the save scan data button in the left winodw
         save_scan_data_button.clicked.connect(save_scan_data_fnc)
 
         save_scan_data_qlineedit = QLineEdit(self) # qlineedit
         save_scan_data_qlineedit.setParent(left_window)
-        save_scan_data_qlineedit.resize(220, 20)
-        save_scan_data_qlineedit.move(110, 290)
+        save_scan_data_qlineedit.resize(189, 20)
+        save_scan_data_qlineedit.move(105, 280)
+
+        save_scan_data_extension_widget = QLabel("\".npy\"", self) # widget
+        save_scan_data_extension_widget.setParent(left_window),
+        save_scan_data_extension_widget.move(297, 288 - 5)
         ############ bendegin save data section ###############
 
         # attempt at displaying Tex text as a QLabel
@@ -1057,7 +1271,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         # XY scan
         xy_scan_label_widget = QLabel("XY scan", self) # widget
         xy_scan_label_widget.setParent(left_window)
-        xy_scan_label_widget.move(15 + 10, indiv_scan_labels_y_height + overall_y_adjust)
+        xy_scan_label_widget.move(12 + 10, indiv_scan_labels_y_height + overall_y_adjust)
 
         # resolution
         xy_scan_resolution_widget = QLabel("Res:", self) # widget
@@ -1068,6 +1282,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         xy_scan_resolution_qlineedit.setParent(left_window)
         xy_scan_resolution_qlineedit.move(30, 40 + row_y_adjust + overall_y_adjust)
         xy_scan_resolution_qlineedit.resize(55, 15)
+        xy_scan_resolution_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
 
         # read time
         xy_scan_read_time_widget = QLabel("APD_t:", self) # widget
@@ -1078,6 +1293,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         xy_scan_read_time_qlineedit.setParent(left_window)
         xy_scan_read_time_qlineedit.move(40, 65 + row_y_adjust + overall_y_adjust)
         xy_scan_read_time_qlineedit.resize(45, 15)
+        xy_scan_read_time_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
         
         # x voltage (min and max)
         xy_scan_x_voltage_min_widget = QLabel("x_V_min:", self) # widget
@@ -1088,6 +1304,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         xy_scan_x_voltage_min_qlineedit.setParent(left_window)
         xy_scan_x_voltage_min_qlineedit.move(50, 90 + row_y_adjust + overall_y_adjust)
         xy_scan_x_voltage_min_qlineedit.resize(35, 15)
+        xy_scan_x_voltage_min_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
 
         xy_scan_x_voltage_max_widget = QLabel("x_V_max:", self) # widget
         xy_scan_x_voltage_max_widget.setParent(left_window)
@@ -1097,6 +1314,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         xy_scan_x_voltage_max_qlineedit.setParent(left_window)
         xy_scan_x_voltage_max_qlineedit.move(55, 115 + row_y_adjust + overall_y_adjust)
         xy_scan_x_voltage_max_qlineedit.resize(30, 15)
+        xy_scan_x_voltage_max_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
 
         # y voltage (min and max)
         xy_scan_y_voltage_min_widget = QLabel("y_V_min:", self) # widget
@@ -1107,6 +1325,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         xy_scan_y_voltage_min_qlineedit.setParent(left_window)
         xy_scan_y_voltage_min_qlineedit.move(50, 140 + row_y_adjust + overall_y_adjust)
         xy_scan_y_voltage_min_qlineedit.resize(35, 15)
+        xy_scan_y_voltage_min_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
 
         xy_scan_y_voltage_max_widget = QLabel("y_V_max:", self) # widget
         xy_scan_y_voltage_max_widget.setParent(left_window)
@@ -1116,6 +1335,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         xy_scan_y_voltage_max_qlineedit.setParent(left_window)
         xy_scan_y_voltage_max_qlineedit.move(55, 165 + row_y_adjust + overall_y_adjust)
         xy_scan_y_voltage_max_qlineedit.resize(30, 15)
+        xy_scan_y_voltage_max_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
         
         # z piezo
         xy_scan_z_piezo_voltage_widget = QLabel("z_V:", self) # widget
@@ -1126,12 +1346,13 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         xy_scan_z_piezo_voltage_qlineedit.setParent(left_window)
         xy_scan_z_piezo_voltage_qlineedit.move(30, 190 + row_y_adjust + overall_y_adjust)
         xy_scan_z_piezo_voltage_qlineedit.resize(55, 15)
+        xy_scan_z_piezo_voltage_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
 
         # run xy scan button
         xy_scan_run_button = QPushButton("run\nXY scan", self) # button
         xy_scan_run_button.setParent(left_window)
         xy_scan_run_button.resize(60, 40)
-        xy_scan_run_button.move(15, 215 + row_y_adjust + overall_y_adjust)
+        xy_scan_run_button.move(10, 215 + row_y_adjust + overall_y_adjust)
         xy_scan_run_button.clicked.connect(xy_scan_resolution_validation_fnc) # this framework is limited currently to only validating resolution
 
         #######################################################################################
@@ -1154,6 +1375,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         xz_scan_resolution_qlineedit.setParent(left_window)
         xz_scan_resolution_qlineedit.move(25 + xz_scan_widgets_left_x_justify, 40 + row_y_adjust + overall_y_adjust)
         xz_scan_resolution_qlineedit.resize(55, 15)
+        xz_scan_resolution_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
 
         # read time
         xz_scan_read_time_widget = QLabel("APD_t:", self) # widget
@@ -1164,6 +1386,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         xz_scan_read_time_qlineedit.setParent(left_window)
         xz_scan_read_time_qlineedit.move(35 + xz_scan_widgets_left_x_justify, 65 + row_y_adjust + overall_y_adjust)
         xz_scan_read_time_qlineedit.resize(45, 15)
+        xz_scan_read_time_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
         
         # x voltage (min and max)
         xz_scan_x_voltage_min_widget = QLabel("x_V_min:", self) # widget
@@ -1174,6 +1397,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         xz_scan_x_voltage_min_qlineedit.setParent(left_window)
         xz_scan_x_voltage_min_qlineedit.move(45 + xz_scan_widgets_left_x_justify, 90 + row_y_adjust + overall_y_adjust)
         xz_scan_x_voltage_min_qlineedit.resize(35, 15)
+        xz_scan_x_voltage_min_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
 
         xz_scan_x_voltage_max_widget = QLabel("x_V_max:", self) # widget
         xz_scan_x_voltage_max_widget.setParent(left_window)
@@ -1183,6 +1407,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         xz_scan_x_voltage_max_qlineedit.setParent(left_window)
         xz_scan_x_voltage_max_qlineedit.move(50 + xz_scan_widgets_left_x_justify, 115 + row_y_adjust + overall_y_adjust)
         xz_scan_x_voltage_max_qlineedit.resize(30, 15)
+        xz_scan_x_voltage_max_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
 
         # y voltage single setting
         xz_scan_y_voltage_widget = QLabel("y_V:", self) # widget
@@ -1193,6 +1418,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         xz_scan_y_voltage_qlineedit.setParent(left_window)
         xz_scan_y_voltage_qlineedit.move(25 + xz_scan_widgets_left_x_justify, 140 + row_y_adjust + overall_y_adjust)
         xz_scan_y_voltage_qlineedit.resize(55, 15)
+        xz_scan_y_voltage_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
                                 
         # z piezo (min and max)
         xz_scan_z_piezo_min_voltage_widget = QLabel("z_V_min:", self) # widget
@@ -1203,6 +1429,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         xz_scan_z_piezo_min_voltage_qlineedit.setParent(left_window)
         xz_scan_z_piezo_min_voltage_qlineedit.move(45 + xz_scan_widgets_left_x_justify, 165 + row_y_adjust + overall_y_adjust)
         xz_scan_z_piezo_min_voltage_qlineedit.resize(35, 15)
+        xz_scan_z_piezo_min_voltage_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
 
         xz_scan_z_piezo_max_voltage_widget = QLabel("z_V_max:", self) # widget
         xz_scan_z_piezo_max_voltage_widget.setParent(left_window)
@@ -1212,6 +1439,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         xz_scan_z_piezo_max_voltage_qlineedit.setParent(left_window)
         xz_scan_z_piezo_max_voltage_qlineedit.move(50 + xz_scan_widgets_left_x_justify, 190 + row_y_adjust + overall_y_adjust)
         xz_scan_z_piezo_max_voltage_qlineedit.resize(30, 15)
+        xz_scan_z_piezo_max_voltage_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
 
         # run xz scan button
         xz_scan_run_button = QPushButton("run\nXZ scan", self) # button
@@ -1229,7 +1457,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         # scan widget 3 "YZ"
         scan_widget_3 = QLabel("YZ scan", self)
         scan_widget_3.setParent(left_window)
-        scan_widget_3.move(265 + 10, indiv_scan_labels_y_height + overall_y_adjust)
+        scan_widget_3.move(265 + 14, indiv_scan_labels_y_height + overall_y_adjust)
 
         # resolution
         yz_scan_resolution_widget = QLabel("Res:", self) # widget
@@ -1240,6 +1468,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         yz_scan_resolution_qlineedit.setParent(left_window)
         yz_scan_resolution_qlineedit.move(25 + yz_scan_widgets_left_x_justify, 40 + row_y_adjust + overall_y_adjust)
         yz_scan_resolution_qlineedit.resize(55, 15)
+        yz_scan_resolution_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
 
         # read time
         yz_scan_read_time_widget = QLabel("APD_t:", self) # widget
@@ -1250,6 +1479,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         yz_scan_read_time_qlineedit.setParent(left_window)
         yz_scan_read_time_qlineedit.move(35 + yz_scan_widgets_left_x_justify, 65 + row_y_adjust + overall_y_adjust)
         yz_scan_read_time_qlineedit.resize(45, 15)
+        yz_scan_read_time_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
         
         # y voltage (min and max)
         yz_scan_y_voltage_min_widget = QLabel("y_V_min:", self) # widget
@@ -1260,6 +1490,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         yz_scan_y_voltage_min_qlineedit.setParent(left_window)
         yz_scan_y_voltage_min_qlineedit.move(45 + yz_scan_widgets_left_x_justify, 90 + row_y_adjust + overall_y_adjust)
         yz_scan_y_voltage_min_qlineedit.resize(35, 15)
+        yz_scan_y_voltage_min_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
 
         yz_scan_y_voltage_max_widget = QLabel("y_V_max:", self) # widget
         yz_scan_y_voltage_max_widget.setParent(left_window)
@@ -1269,6 +1500,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         yz_scan_y_voltage_max_qlineedit.setParent(left_window)
         yz_scan_y_voltage_max_qlineedit.move(50 + yz_scan_widgets_left_x_justify, 115 + row_y_adjust + overall_y_adjust)
         yz_scan_y_voltage_max_qlineedit.resize(30, 15)
+        yz_scan_y_voltage_max_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
 
         # x voltage single setting
         yz_scan_x_voltage_widget = QLabel("x_V:", self) # widget
@@ -1279,6 +1511,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         yz_scan_x_voltage_qlineedit.setParent(left_window)
         yz_scan_x_voltage_qlineedit.move(25 + yz_scan_widgets_left_x_justify, 140 + row_y_adjust + overall_y_adjust)
         yz_scan_x_voltage_qlineedit.resize(55, 15)
+        yz_scan_x_voltage_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
                                 
         # z piezo (min and max)
         yz_scan_z_piezo_min_voltage_widget = QLabel("z_V_min:", self) # widget
@@ -1289,6 +1522,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         yz_scan_z_piezo_min_voltage_qlineedit.setParent(left_window)
         yz_scan_z_piezo_min_voltage_qlineedit.move(45 + yz_scan_widgets_left_x_justify, 165 + row_y_adjust + overall_y_adjust)
         yz_scan_z_piezo_min_voltage_qlineedit.resize(35, 15)
+        yz_scan_z_piezo_min_voltage_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
 
         yz_scan_z_piezo_max_voltage_widget = QLabel("z_V_max:", self) # widget
         yz_scan_z_piezo_max_voltage_widget.setParent(left_window)
@@ -1298,6 +1532,7 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
         yz_scan_z_piezo_max_voltage_qlineedit.setParent(left_window)
         yz_scan_z_piezo_max_voltage_qlineedit.move(50 + yz_scan_widgets_left_x_justify, 190 + row_y_adjust + overall_y_adjust)
         yz_scan_z_piezo_max_voltage_qlineedit.resize(30, 15)
+        yz_scan_z_piezo_max_voltage_qlineedit.setAlignment(PyQt5.QtCore.Qt.AlignRight)
 
         # run yz scan button
         yz_scan_run_button = QPushButton("run\nYZ scan", self) # button
@@ -1308,8 +1543,8 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
 
 ####################################################################### context menu ######################################################################
 
-    # context (right-click) menu
-    def contextMenuEvent(self, event):
+    def contextMenuEvent(self, event): # context (right-click) menu
+
         cmenu = QMenu(self)
         cmenuoneAct = cmenu.addAction("one")
         cmenutwoAct = cmenu.addAction("two")
@@ -1320,160 +1555,10 @@ C:/Users/lukin2dmaterials/miniconda3/envs/qcodes/Lib/site-packages/qcodes_contri
 
 # ?
 if __name__ == '__main__':
+
     app = QtWidgets.QApplication(sys.argv)
     mw = Parent()
     mw.show()
     sys.exit(app.exec_())
 
 #################################################################### END #######################################################################################
-
-# issues
-"""
-1. leftwindow fixed sized presents window scaling prob
-2. multiple context menus appear over plot
-"""
-    
-# comments/questions
-"""
-1.
-"""
-
-################################################################## old useful code ##########################################################################
-# # combo select box 1
-# combobox1 = QComboBox(self)
-# combobox1.move(12, 30)
-# combobox1.resize(98, 20)
-# combobox1.addItem("one")
-# combobox1.addItem("two")
-# combobox1.addItem("three")
-
-# # line edit 1
-# qle1 = QLineEdit(self)
-# qle1.move(12, 52)
-# qle1.resize(395, 20)
-
-# # creating progress bar
-# pbar = QProgressBar(self)
-# # pbar.resize(80, 25)
-# pbar.move(160, 250)
-
-
-# def scan_update(self, parent = Child):
-#     self.x_data = numpy.random.randint(9, size = 5)
-#     self.y_data = numpy.random.randint(9, size = 5)
-#     self.sc.axes.cla()
-#     self.sc.axes.plot(self.x_data, self.y_data)
-#     self.sc.draw()
-
-# def button_2_clicked(self, parent = Child):                   # use this for demo
-#     # print("button 2 clicked")
-#     xy_scan_function()
-#     sleep(0.75)
-#     scan_update()
-
-# rightwindow.label = QLabel(rightwindow)
-# rightwindow.pixmap = QPixmap("082422_img_1.png")
-# rightwindow.label.setPixmap(rightwindow.pixmap)
-# rightwindow.label.resize(300, 300) # other width, height: rightwindow.pixmap.width(), rightwindow.pixmap.height()
-
-# # button1
-# button1 = QPushButton("change plot (basic)", self)
-# button1.resize(100, 25)
-# button1.move(280, 25)
-# button1.clicked.connect(button_1_clicked)
-
-# ################### not yet #####################
-# def update_plot():
-#     # print("update_call called")
-#     self.sc.axes.cla()
-#     self.x_data = numpy.random.randint(9, size = 5)
-#     self.y_data = numpy.random.randint(9, size = 5)
-#     self.sc.axes.plot(self.x_data, self.y_data)
-#     self.sc.draw()
-
-# def button_1_clicked(self, parent = Child):
-#     # print("button 1 clicked")
-#     update_plot()
-
-# def scan_update():                                          # use this for demo
-#     self.sc.axes.cla()
-#     output_data_set = numpy.load("file_name_by_time.npy")
-#     self.sc.axes.pcolormesh(output_data_set, cmap = "RdBu_r")
-#     self.sc.draw()
-# ################### not yet ######################
-
-# self.x_data = numpy.random.randint(9, size = 5)
-# self.y_data = numpy.random.randint(9, size = 5)
-# # self.z_data = numpy.random.randint(9, size = 5)
-# self.sc.axes.plot(self.x_data, self.y_data)
-
-# data_set = numpy.load("082422_faster_scan_03.npy")
-# self.sc.axes.pcolormesh(data_set, cmap = "RdBu_r")
-# self.sc.axes.colorbar(plot_1, ax = self.sc.axes)
-# self.sc.axes.colorbar(plot_1)
-
-# if resolution < 20:
-#     make exception window show
-#     hard part: wait for user fix
-# else:
-#     print params
-#     run scan
-
-
-
-
-# xy_scan_run_button.clicked.connect(xy_scan_run_button_clicked_fnc)
-# xy_scan_run_button.clicked.connect(check resolution fnc)
-# if check resolution fnc():
-#     print_XY_scan_parameters_fnc(self)
-#     run_xy_scan_fnc()
-# else:
-
-# if xy_scan_parameters_validated_Q == True:
-#     xy_scan_run_button.clicked.connect(print_XY_scan_parameters_fnc) # call print_XY_scan_parameters_fnc
-#     xy_scan_run_button.clicked.connect(run_xy_scan_fnc) # call xy_scan_run_button.clicked.connect(run_xy_scan_fnc)
-# else:
-#     xy_scan_run_button.clicked.connect(xy_scan_input_validation_fnc)
-
-# global user_scan_parameters_validated_Q                                         # overall try to input validation
-# if user_scan_parameters_validated_Q == False:
-#     xy_scan_run_button.clicked.connect(scan_input_validation_fnc)                                # can this fnc return a bool checked here?
-# else:
-#     xy_scan_run_button.clicked.connect(print_XY_scan_parameters_fnc)
-#     xy_scan_run_button.clicked.connect(run_xy_scan_fnc)
-
-
-# try:                                                          # Try... Except for running mulitple scans
-#     xy_scan_run_button.clicked.connect(run_xy_scan_fnc)
-# except KeyError:
-#     scan_galvo.close()
-#     xy_scan_run_button.clicked.connect(run_xy_scan_fnc)
-
-#
-# def xy_scan_run_button_clicked_fnc(): # this fnc
-#     my_bool = False
-#     if resolution < 20:
-#         show exception window
-
-#     print_XY_scan_parameters_fnc(self)
-#     run_xy_scan_fnc()
-
-#
-# def xy_scan_input_validation_fnc(): # this fnc...
-#     print("EXCEPTION!")
-#     var == True
-
-# single option for input validation                                                             # INCOMPLETE- done locally instead
-# # scanning input validation fnc
-# """
-# This fnc is called before any scan (XY, XZ, or YZ) is run. It will confirm valid parameters are entered by the user to prevent erros and non-allowed driving
-# voltages sent to the objective z_piezo and/or the mirror motors. A list of checks is present below
-
-# 1. Scanning resolution...
-# """
-# def scan_input_validation_fnc(): # this fnc validates the input for user-entered scanning (XY, XZ, and YZ) parameters
-#     if int(xy_scan_resolution_qlineedit.text()) < 20:
-#         print("Exception!")
-#         global user_scan_parameters_validated_Q
-#         user_scan_parameters_validated_Q == True
-#     # print("resolution is: %d" % int(xy_scan_resolution_qlineedit.text()))
